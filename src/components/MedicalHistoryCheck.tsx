@@ -9,7 +9,8 @@ type Profile = {
   id: string;
   full_name?: string;
   email?: string;
-  // --- ADD NEW FIELDS ---
+  date_of_birth?: string; // For calculating age
+  gender?: string; // Needed for backend model
   ongoing_medications?: string;
   medical_history?: { complication: string; description: string }[];
 };
@@ -30,7 +31,6 @@ type Prescription = {
     instructions: string;
   }[];
 };
-// --- (End Types) ---
 
 interface MedicalHistoryCheckProps {
   patient: Profile; // This object will now contain the history
@@ -39,18 +39,41 @@ interface MedicalHistoryCheckProps {
   onCancel: () => void;
 }
 
+// Type for the backend's expected response structure
+type SafetyCheckOutput = {
+  overall_assessment: string;
+  flags: {
+    problematic_drug: string;
+    issue: string;
+    explanation: string;
+    suggested_alternative: string;
+  }[];
+};
+
+
+// Type for displaying results in UI (includes error state)
 type AIResult = {
-  status: 'safe' | 'warning' | 'error';
+  status: 'safe' | 'warning' | 'error' | 'high-risk'; // Match backend assessment + error
   message: string;
   suggestions: string[];
 };
 
+// --- Function to calculate age ---
+function calculateAge(dateOfBirth?: string): number {
+  if (!dateOfBirth) return 0; // Or handle as unknown
+  const birthDate = new Date(dateOfBirth);
+  const today = new Date();
+  let age = today.getFullYear() - birthDate.getFullYear();
+  const m = today.getMonth() - birthDate.getMonth();
+  if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
+    age--;
+  }
+  return age > 0 ? age : 0; // Ensure age is not negative
+}
+// ---
+
 export function MedicalHistoryCheck({ patient, prescription, onFinalSave, onCancel }: MedicalHistoryCheckProps) {
   const { profile: doctor } = useAuth();
-  
-  // --- REMOVED: history state is no longer needed ---
-  // const [history, setHistory] = useState('');
-  
   const [aiResult, setAiResult] = useState<AIResult | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -58,30 +81,91 @@ export function MedicalHistoryCheck({ patient, prescription, onFinalSave, onCanc
     setLoading(true);
     setAiResult(null);
 
-    // --- MODIFIED: Use patient data from props ---
-    const patientHistory = {
-      ongoingMedications: patient.ongoing_medications || "None provided",
-      medicalHistory: patient.medical_history || [],
-    };
-    
-    // In a real app, send `prescription` & `patientHistory` to your backend
-    console.log("Sending to AI for analysis:", { prescription, patientHistory });
+    // --- 1. GATHER AND TRANSFORM DATA ---
+    const patientAge = calculateAge(patient.date_of_birth);
+    const knownComplicationsText = patient.medical_history?.map(h => `${h.complication}${h.description ? `: ${h.description}` : ''}`).join('; ') || "None provided"; // Use semicolon for clarity
+    const pastMedicationsText = patient.ongoing_medications || "None provided";
 
-    // Simulate a delay
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    const newPrescriptionsFormatted = prescription.medications.map(med => {
+      // Convert timing object to a frequency string
+      const times = [];
+      if (med.timing.morning) times.push("Morning");
+      if (med.timing.afternoon) times.push("Afternoon");
+      if (med.timing.night) times.push("Night");
+      const frequency = times.join(', ') || "As directed";
 
-    // Simulate a response
-    const mockResponse: AIResult = {
-      status: 'warning',
-      message: `Potential cross-reaction detected. Patient history shows: ${patientHistory.medicalHistory[0]?.complication || 'Allergy'}.`,
-      suggestions: ['Consider replacing Amoxicillin with Azithromycin 500mg, once daily for 3 days.']
+      return {
+        drug_name: med.name,
+        dosage: med.dosage,
+        frequency: frequency,
+      };
+    });
+
+    // --- 2. CONSTRUCT THE PAYLOAD FOR THE BACKEND ---
+    const payload = {
+      patient: {
+        age: patientAge,
+        gender: patient.gender || "Not specified",
+        consultation_reason: prescription.diagnosis || "Not specified",
+      },
+      history: {
+        known_complications: knownComplicationsText,
+        past_medications: pastMedicationsText,
+      },
+      new_prescriptions: newPrescriptionsFormatted,
     };
-    
-    setAiResult(mockResponse);
-    setLoading(false);
+
+    console.log("Sending to AI backend:", JSON.stringify(payload, null, 2));
+
+    try {
+      // --- 3. MAKE THE ACTUAL FETCH CALL ---
+      // Replace with your actual backend URL if different
+      const response = await fetch('http://127.0.0.1:8000/run-safety-check', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: "Unknown API error" }));
+        throw new Error(`API Error ${response.status}: ${errorData.detail || response.statusText}`);
+      }
+
+      const backendResult: SafetyCheckOutput = await response.json();
+
+      // --- 4. MAP BACKEND RESULT TO UI STATE ---
+      let uiStatus: AIResult['status'] = 'safe';
+      if (backendResult.overall_assessment?.toLowerCase() === 'caution') uiStatus = 'warning';
+      if (backendResult.overall_assessment?.toLowerCase() === 'high-risk') uiStatus = 'high-risk'; // Or map to 'error' if preferred
+
+      // Combine explanations and suggestions into UI fields
+      const message = backendResult.flags.length > 0
+        ? backendResult.flags.map(f => `${f.issue} with ${f.problematic_drug}: ${f.explanation}`).join('\n')
+        : "AI analysis found no major issues.";
+      const suggestions = backendResult.flags.map(f => f.suggested_alternative).filter(Boolean); // Filter out empty suggestions
+
+      setAiResult({
+         status: uiStatus,
+         message: message,
+         suggestions: suggestions
+      });
+
+    } catch (error: any) {
+      console.error("Error calling AI Safety Check:", error);
+      setAiResult({
+         status: 'error', // Use 'error' status for fetch/network issues
+         message: `Failed to get AI analysis: ${error.message}`,
+         suggestions: []
+      });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleSave = () => {
+    // Save prescription with 'active' status
     const finalPrescription = {
       ...prescription,
       status: 'active' as const,
@@ -92,82 +176,100 @@ export function MedicalHistoryCheck({ patient, prescription, onFinalSave, onCanc
   return (
     <div className="min-h-screen bg-gray-50 p-8">
       <div className="max-w-4xl mx-auto">
+        {/* Back Button */}
         <button onClick={onCancel} className="flex items-center gap-2 text-gray-600 hover:text-gray-900 mb-4">
           <ArrowLeft className="w-5 h-5" />
           Back to Dashboard
         </button>
 
         <div className="bg-white rounded-xl shadow-xl p-8">
+          {/* Header */}
           <h1 className="text-3xl font-bold text-gray-900 mb-2">AI Safety Check</h1>
           <p className="text-gray-600 mb-6">
             Analyzing prescription for <span className="font-semibold">{patient.full_name}</span>
             {" "}by <span className="font-semibold">Dr. {doctor?.full_name}</span>.
           </p>
 
-          {/* --- MODIFIED: Display Patient History (Read-Only) --- */}
+          {/* Display Patient History (Read-Only) */}
           <div className="mb-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-3">Patient's Existing Medical Profile</h3>
-            
+            <h3 className="text-lg font-semibold text-gray-900 mb-3">Patient's Medical Profile</h3>
             <div className="space-y-4">
-              {/* Ongoing Medications */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Ongoing Medications
-                </label>
-                <div className="w-full px-4 py-3 bg-gray-50 text-gray-700 rounded-lg border min-h-[40px]">
-                  {patient.ongoing_medications || <span className="text-gray-400">No ongoing medications listed.</span>}
+              {/* Basic Info */}
+               <div>
+                 <label className="block text-sm font-medium text-gray-700 mb-1">
+                   Basic Info
+                 </label>
+                 <div className="w-full px-4 py-3 bg-gray-50 text-gray-700 text-sm rounded-lg border min-h-[40px]">
+                   Age: {calculateAge(patient.date_of_birth) || 'N/A'}, Gender: {patient.gender || 'N/A'}
+                 </div>
+               </div>
+              {/* Ongoing Meds */}
+               <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Ongoing Medications
+                  </label>
+                 <div className="w-full px-4 py-3 bg-gray-50 text-gray-700 text-sm rounded-lg border min-h-[40px]">
+                    {patient.ongoing_medications || <span className="text-gray-400">None listed.</span>}
+                  </div>
                 </div>
-              </div>
-
               {/* Medical History */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Medical History
-                </label>
-                <div className="w-full p-4 bg-gray-50 rounded-lg border space-y-2 min-h-[60px]">
-                  {!patient.medical_history || patient.medical_history.length === 0 ? (
-                    <span className="text-gray-400">No medical history items listed.</span>
-                  ) : (
-                    patient.medical_history.map((item, index) => (
-                      <div key={index} className="p-2 bg-white rounded border shadow-sm">
-                        <p className="font-semibold text-sm">{item.complication}</p>
-                        {item.description && (
-                          <p className="text-xs text-gray-600">{item.description}</p>
-                        )}
-                      </div>
-                    ))
-                  )}
+               <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Medical History
+                  </label>
+                  <div className="w-full p-3 bg-gray-50 rounded-lg border space-y-2 min-h-[60px]">
+                    {!patient.medical_history || patient.medical_history.length === 0 ? (
+                      <span className="text-sm text-gray-400">No medical history items listed.</span>
+                    ) : (
+                      patient.medical_history.map((item, index) => (
+                        <div key={index} className="p-2 bg-white rounded border shadow-sm">
+                          <p className="font-semibold text-sm">{item.complication}</p>
+                          {item.description && (
+                            <p className="text-xs text-gray-600">{item.description}</p>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
-              </div>
             </div>
           </div>
-          {/* --- END OF MODIFICATION --- */}
 
-          {/* --- Step 2: AI Check (Button modified) --- */}
+          {/* AI Check Button */}
           <button
             onClick={handleAiCheck}
-            disabled={loading} // No longer depends on history.trim()
-            className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium disabled:opacity-50"
+            disabled={loading}
+            className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium disabled:opacity-50 transition-colors"
           >
             <Shield className="w-5 h-5" />
             {loading ? 'Analyzing...' : 'Analyze Prescription Against Profile'}
           </button>
 
-          {/* --- (AI Result display is unchanged) --- */}
+          {/* AI Result Display */}
           {aiResult && (
             <div className={`mt-6 p-4 rounded-lg border ${
-              aiResult.status === 'safe' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'
+              aiResult.status === 'safe' ? 'bg-green-50 border-green-200' :
+              aiResult.status === 'warning' ? 'bg-yellow-50 border-yellow-200' :
+              'bg-red-50 border-red-200' // error or high-risk
             }`}>
               <div className="flex items-center gap-3">
-                {aiResult.status === 'safe' ?
-                  <CheckCircle className="w-6 h-6 text-green-600" /> :
-                  <AlertTriangle className="w-6 h-6 text-red-600" />
+                {aiResult.status === 'safe' ? <CheckCircle className="w-6 h-6 text-green-600" /> :
+                 aiResult.status === 'warning' ? <AlertTriangle className="w-6 h-6 text-yellow-600" /> :
+                 <AlertTriangle className="w-6 h-6 text-red-600" /> // error or high-risk
                 }
-                <h3 className="text-lg font-semibold">
-                  {aiResult.status === 'safe' ? 'AI Check Clear' : 'AI Warning Detected'}
+                <h3 className={`text-lg font-semibold ${
+                  aiResult.status === 'safe' ? 'text-green-800' :
+                  aiResult.status === 'warning' ? 'text-yellow-800' :
+                  'text-red-800'
+                }`}>
+                  {aiResult.status === 'safe' ? 'AI Check Clear' :
+                   aiResult.status === 'warning' ? 'AI Potential Issue Found' :
+                   aiResult.status === 'high-risk' ? 'AI High-Risk Warning' :
+                   'Analysis Error'}
                 </h3>
               </div>
-              <p className="text-gray-700 mt-2">{aiResult.message}</p>
+              {/* Display message using pre-wrap to preserve newlines */}
+              <p className="text-gray-700 mt-2 text-sm whitespace-pre-wrap">{aiResult.message}</p>
               {aiResult.suggestions.length > 0 && (
                 <div className="mt-3">
                   <p className="font-semibold text-sm">Suggestions:</p>
@@ -178,14 +280,16 @@ export function MedicalHistoryCheck({ patient, prescription, onFinalSave, onCanc
               )}
             </div>
           )}
-          
-          {/* --- (Final Save button is unchanged) --- */}
+
+          {/* Final Save Button */}
           <p className="text-xs text-gray-500 text-center mt-6">
-            The doctor has the final decision on all modifications.
+            The doctor retains full clinical responsibility and makes the final decision.
           </p>
           <button
             onClick={handleSave}
-            className="w-full mt-2 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium"
+            // Optionally disable if AI check hasn't run or if there's an error
+            // disabled={!aiResult || aiResult.status === 'error'}
+            className="w-full mt-2 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium transition-colors disabled:opacity-50"
           >
             Save Final Prescription
           </button>
