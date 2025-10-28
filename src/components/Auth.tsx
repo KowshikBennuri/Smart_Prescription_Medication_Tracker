@@ -14,6 +14,7 @@ export function Auth() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
+
   const { signUp, signIn } = useAuth();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -23,16 +24,27 @@ export function Auth() {
 
     try {
       if (isSignUp) {
-        const additionalData: any = {};
+        // --- THIS IS THE CHANGE ---
+        // Consolidate all form data into one object
+        const signUpData: any = {
+          email,
+          password,
+          full_name: fullName,
+          role,
+        };
+
         if (role === 'doctor') {
-          if (licenseNumber) additionalData.license_number = licenseNumber;
-          if (specialization) additionalData.specialization = specialization;
+          if (licenseNumber) signUpData.license_number = licenseNumber;
+          if (specialization) signUpData.specialization = specialization;
         } else {
-          if (dateOfBirth) additionalData.date_of_birth = dateOfBirth;
+          if (dateOfBirth) signUpData.date_of_birth = dateOfBirth;
         }
-        await signUp(email, password, fullName, role, additionalData);
+        
+        await signUp(signUpData); // Pass the single object
+        alert('Sign up successful! Please check your email to verify.');
+
       } else {
-        await signIn(email, password);
+        await signIn({ email, password }); // Pass as object
       }
     } catch (err: any) {
       setError(err.message || 'An error occurred');

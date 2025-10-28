@@ -2,6 +2,9 @@ import { useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { X } from "lucide-react";
 
+// Key for storing prescription data in localStorage
+const PRESCRIPTIONS_KEY = 'mock_prescriptions_v1';
+
 type Profile = {
   id: string;
   full_name?: string;
@@ -39,23 +42,42 @@ export function PrescriptionForm({
     setLoading(true);
 
     try {
-      const dataToSend = {
+      // --- MODIFICATION: Calculate end date ---
+      const startDateObj = new Date(startDate);
+      const duration = parseInt(durationDays) || 0;
+      const endDateObj = new Date(startDateObj);
+      endDateObj.setDate(startDateObj.getDate() + duration);
+
+      // --- MODIFICATION: Create the full prescription object ---
+      const newPrescription = {
+        id: 'presc_' + Math.random().toString(36).slice(2, 9),
         doctor_id: profile?.id || "temp-doctor-id",
         patient_id: patientId,
         medication_name: medicationName,
         dosage,
         frequency,
-        duration_days: parseInt(durationDays),
+        start_date: startDate,
+        end_date: endDateObj.toISOString().split('T')[0], // Save end date
         instructions,
         diagnosis: diagnosis || null,
-        start_date: startDate,
+        status: 'active' as const, // Default to 'active'
       };
 
-      console.log("Prescription form submitted:", dataToSend);
+      // --- MODIFICATION: Save to localStorage ---
+      // 1. Get existing data
+      const raw = localStorage.getItem(PRESCRIPTIONS_KEY);
+      const allPrescriptions = raw ? JSON.parse(raw) : [];
+      
+      // 2. Add new prescription
+      allPrescriptions.push(newPrescription);
+      
+      // 3. Save back to storage
+      localStorage.setItem(PRESCRIPTIONS_KEY, JSON.stringify(allPrescriptions));
+      // --- END OF MODIFICATION ---
 
-      // Here we will later call API → Gemini safety check → Firebase save
+      console.log("Prescription form saved:", newPrescription);
 
-      onSuccess();
+      onSuccess(); // This will trigger the dashboard to reload its list
     } catch (error: any) {
       alert("Something went wrong: " + error.message);
     } finally {

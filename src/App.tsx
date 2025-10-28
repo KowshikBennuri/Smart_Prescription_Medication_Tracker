@@ -1,36 +1,36 @@
-import { AuthProvider, useAuth } from './contexts/AuthContext';
-import { Auth } from './components/Auth';
-import { DoctorDashboard } from './components/DoctorDashboard';
-import { PatientDashboard } from './components/PatientDashboard';
+import { Auth } from './components/Auth'; // <-- Fixed path
+import { DoctorDashboard } from './components/DoctorDashboard'; // <-- Fixed path
+import { PatientDashboard } from './components/PatientDashboard'; // <-- Fixed path
+import { useAuth } from './contexts/AuthContext'; // <-- Fixed path
 
-function AppContent() {
-  const { user, profile, loading } = useAuth();
+function App() {
+  const { session, profile, loading } = useAuth();
 
+  // Show a loading screen while auth is being checked
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-gray-600">Loading...</div>
+        <div className="text-gray-600 text-lg">Loading...</div>
       </div>
     );
   }
 
-  if (!user || !profile) {
+  // No session, show the Auth page
+  if (!session || !profile) {
     return <Auth />;
   }
 
+  // Session exists, check the profile role
   if (profile.role === 'doctor') {
     return <DoctorDashboard />;
   }
 
-  return <PatientDashboard />;
-}
+  if (profile.role === 'patient') {
+    return <PatientDashboard />;
+  }
 
-function App() {
-  return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
-  );
+  // Fallback (e.g., profile still loading or role is undefined)
+  return <Auth />;
 }
 
 export default App;

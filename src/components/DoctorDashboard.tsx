@@ -3,6 +3,10 @@ import { useAuth } from '../contexts/AuthContext';
 import { Users, FileText, LogOut, Plus, Activity } from 'lucide-react';
 import { PrescriptionForm } from './PrescriptionForm';
 import { PrescriptionList } from './PrescriptionList';
+import { supabase } from '../lib/supabaseClient'; // Make sure this is imported
+
+// Key for storing prescription data in localStorage
+const PRESCRIPTIONS_KEY = 'mock_prescriptions_v1';
 
 // Temporary local mock types and sample data (replace later with backend API)
 type Profile = {
@@ -43,23 +47,69 @@ const mockPatients: Profile[] = [
   }
 ];
 
-// Initial sample prescriptions
-const mockPrescriptions: Prescription[] = [];
-
 export function DoctorDashboard() {
   const { profile, signOut } = useAuth();
   const [patients, setPatients] = useState<Profile[]>(mockPatients);
-  const [prescriptions, setPrescriptions] = useState<Prescription[]>(mockPrescriptions);
+  
+  const [prescriptions, setPrescriptions] = useState<Prescription[]>([]);
+  
   const [showPrescriptionForm, setShowPrescriptionForm] = useState(false);
   const [selectedPatient, setSelectedPatient] = useState<Profile | null>(null);
   const [activeTab, setActiveTab] = useState<'patients' | 'prescriptions'>('prescriptions');
   const [newPatientEmail, setNewPatientEmail] = useState('');
-  const [loading] = useState(false);
+  const [loading] = useState(false); 
 
-  const addPatient = (e: React.FormEvent) => {
+  const loadPrescriptions = () => {
+    try {
+      const raw = localStorage.getItem(PRESCRIPTIONS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Prescription[];
+        parsed.sort((a, b) => new Date(b.start_date).getTime() - new Date(a.start_date).getTime());
+        setPrescriptions(parsed);
+      } else {
+        setPrescriptions([]);
+      }
+    } catch {
+      console.error("Failed to load prescriptions from localStorage");
+      setPrescriptions([]);
+    }
+  };
+
+  useEffect(() => {
+    loadPrescriptions();
+  }, []);
+
+  const addPatient = async (e: React.FormEvent) => {
     e.preventDefault();
-    alert('Local mode: Patient adding simulation only.');
-    setNewPatientEmail('');
+    
+    try {
+      // 1. Query Supabase for the patient by email
+      const { data: foundPatient, error } = await supabase
+        .from('profiles')
+        .select('*')
+        // MODIFICATION: Add .trim() to clean up email input
+        .eq('email', newPatientEmail.trim()) 
+        .eq('role', 'patient') // Make sure they are a patient
+        .single(); // We only expect one
+
+      if (error) {
+        throw new Error("No patient found with that email or user is not a patient.");
+      }
+
+      if (foundPatient) {
+        // 2. Check if patient is already in the list
+        if (patients.find(p => p.id === foundPatient.id)) {
+          alert('This patient is already in your list.');
+        } else {
+          // 3. Add the found patient to your state
+          setPatients(prevPatients => [...prevPatients, foundPatient]);
+          alert('Patient added successfully!');
+        }
+        setNewPatientEmail('');
+      }
+    } catch (error: any) {
+      alert('Error: ' + error.message);
+    }
   };
 
   const handleNewPrescription = () => {
@@ -129,7 +179,7 @@ export function DoctorDashboard() {
                 <PrescriptionList
                   prescriptions={prescriptions}
                   patients={patients}
-                  onRefresh={() => {}}
+                  onRefresh={loadPrescriptions}
                 />
               </>
             )}
@@ -190,6 +240,7 @@ export function DoctorDashboard() {
           onSuccess={() => {
             setShowPrescriptionForm(false);
             setSelectedPatient(null);
+            loadPrescriptions(); 
           }}
         />
       )}
@@ -197,6 +248,7 @@ export function DoctorDashboard() {
   );
 }
 
+// (The DashboardStat and DashboardTab functions are unchanged)
 function DashboardStat({ title, value, icon }: any) {
   return (
     <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
