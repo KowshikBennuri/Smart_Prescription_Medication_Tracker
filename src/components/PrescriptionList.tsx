@@ -1,16 +1,24 @@
-import { Pill, Calendar, Clock, FileText, Trash2 } from 'lucide-react';
+import { Calendar, FileText, Trash2, Sunrise, Sun, Sunset } from 'lucide-react';
+import { supabase } from '../lib/supabaseClient'; // <-- NEW IMPORT
+
+// --- (Types) ---
+type MedicationItem = {
+  id: string;
+  name: string;
+  dosage: string;
+  timing: { morning: boolean; afternoon: boolean; night: boolean };
+  instructions: string;
+};
 
 type Prescription = {
-  id: string;
+  id: string; 
+  doctor_id: string;
   patient_id: string;
-  medication_name: string;
-  dosage: string;
-  frequency: string;
   start_date: string;
   end_date: string;
-  status: 'active' | 'completed' | 'cancelled';
-  diagnosis?: string | null;
-  instructions?: string | null;
+  diagnosis?: string;
+  status: 'active' | 'completed' | 'cancelled' | 'pending_ai_check';
+  medications: MedicationItem[];
 };
 
 type Profile = {
@@ -22,10 +30,9 @@ type Profile = {
 interface PrescriptionListProps {
   prescriptions: Prescription[];
   patients: Profile[];
-  onRefresh: () => void;
+  onRefresh: () => void; // This is now the loadPrescriptions() function from Dashboard
 }
-
-const PRESCRIPTIONS_KEY = 'mock_prescriptions_v1';
+// --- (End Types) ---
 
 export function PrescriptionList({ prescriptions, patients, onRefresh }: PrescriptionListProps) {
   const getPatientName = (patientId: string) => {
@@ -33,7 +40,7 @@ export function PrescriptionList({ prescriptions, patients, onRefresh }: Prescri
     return patient?.full_name || 'Unknown Patient';
   };
 
-  const getStatusColor = (status: string) => {
+  const getStatusColor = (status: Prescription['status']) => {
     switch (status) {
       case 'active':
         return 'bg-green-100 text-green-800';
@@ -41,27 +48,42 @@ export function PrescriptionList({ prescriptions, patients, onRefresh }: Prescri
         return 'bg-gray-100 text-gray-800';
       case 'cancelled':
         return 'bg-red-100 text-red-800';
+      case 'pending_ai_check':
+        return 'bg-yellow-100 text-yellow-800';
       default:
         return 'bg-gray-100 text-gray-800';
     }
   };
 
-  const updateStorage = (updatedList: Prescription[]) => {
-    localStorage.setItem(PRESCRIPTIONS_KEY, JSON.stringify(updatedList));
-    onRefresh();
+  // --- MODIFIED: No longer writes to localStorage ---
+  const handleDelete = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this entire prescription set?')) return;
+    try {
+      const { error } = await supabase
+        .from('prescriptions')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+      onRefresh(); // Refresh the list from the DB
+    } catch (error: any) {
+      alert("Error deleting prescription: " + error.message);
+    }
   };
 
-  const handleDelete = (id: string) => {
-    if (!confirm('Are you sure you want to delete this prescription?')) return;
-    const updated = prescriptions.filter(p => p.id !== id);
-    updateStorage(updated);
-  };
+  // --- MODIFIED: No longer writes to localStorage ---
+  const handleStatusChange = async (id: string, newStatus: 'active' | 'completed' | 'cancelled') => {
+    try {
+      const { error } = await supabase
+        .from('prescriptions')
+        .update({ status: newStatus })
+        .eq('id', id);
 
-  const handleStatusChange = (id: string, newStatus: 'active' | 'completed' | 'cancelled') => {
-    const updated = prescriptions.map(p =>
-      p.id === id ? { ...p, status: newStatus } : p
-    );
-    updateStorage(updated);
+      if (error) throw error;
+      onRefresh(); // Refresh the list from the DB
+    } catch (error: any) {
+      alert("Error updating status: " + error.message);
+    }
   };
 
   if (prescriptions.length === 0) {
@@ -75,6 +97,7 @@ export function PrescriptionList({ prescriptions, patients, onRefresh }: Prescri
     );
   }
 
+  // --- (The JSX is unchanged from the previous version) ---
   return (
     <div className="space-y-4">
       {prescriptions.map((prescription) => (
@@ -85,9 +108,11 @@ export function PrescriptionList({ prescriptions, patients, onRefresh }: Prescri
           <div className="flex items-start justify-between mb-3">
             <div className="flex-1">
               <div className="flex items-center gap-3 mb-2">
-                <h3 className="text-lg font-semibold text-gray-900">{prescription.medication_name}</h3>
+                <h3 className="text-lg font-semibold text-gray-900">
+                  {prescription.diagnosis || 'Prescription Set'}
+                </h3>
                 <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(prescription.status)}`}>
-                  {prescription.status}
+                  {prescription.status.replace('_', ' ')}
                 </span>
               </div>
               <p className="text-sm text-gray-600 mb-1">
@@ -103,23 +128,7 @@ export function PrescriptionList({ prescriptions, patients, onRefresh }: Prescri
             </button>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-            <div className="flex items-center gap-2">
-              <Pill className="w-4 h-4 text-gray-400" />
-              <div>
-                <p className="text-xs text-gray-500">Dosage</p>
-                <p className="text-sm font-medium text-gray-900">{prescription.dosage}</p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <Clock className="w-4 h-4 text-gray-400" />
-              <div>
-                <p className="text-xs text-gray-500">Frequency</p>
-                <p className="text-sm font-medium text-gray-900">{prescription.frequency}</p>
-              </div>
-            </div>
-
+          <div className="grid grid-cols-2 gap-4 mb-4">
             <div className="flex items-center gap-2">
               <Calendar className="w-4 h-4 text-gray-400" />
               <div>
@@ -141,16 +150,35 @@ export function PrescriptionList({ prescriptions, patients, onRefresh }: Prescri
             </div>
           </div>
 
-          {prescription.diagnosis && (
-            <div className="mb-3">
-              <p className="text-xs text-gray-500 mb-1">Diagnosis</p>
-              <p className="text-sm text-gray-900">{prescription.diagnosis}</p>
-            </div>
-          )}
-
           <div className="mb-4">
-            <p className="text-xs text-gray-500 mb-1">Instructions</p>
-            <p className="text-sm text-gray-700">{prescription.instructions}</p>
+            <p className="text-xs text-gray-500 mb-2 font-medium">
+              Medications ({prescription.medications.length})
+            </p>
+            <div className="space-y-3">
+              {prescription.medications.map((med) => (
+                <div key={med.id} className="p-3 bg-gray-50 rounded-lg border border-gray-200">
+                  <p className="font-semibold text-sm text-gray-900">{med.name} - {med.dosage}</p>
+                  <p className="text-sm text-gray-600 mt-1">{med.instructions}</p>
+                  <div className="flex items-center gap-3 mt-2">
+                    {med.timing.morning && (
+                      <div className="flex items-center gap-1 text-xs text-yellow-700">
+                        <Sunrise className="w-3 h-3" /> Morning
+                      </div>
+                    )}
+                    {med.timing.afternoon && (
+                       <div className="flex items-center gap-1 text-xs text-blue-700">
+                        <Sun className="w-3 h-3" /> Afternoon
+                      </div>
+                    )}
+                    {med.timing.night && (
+                      <div className="flex items-center gap-1 text-xs text-indigo-700">
+                        <Sunset className="w-3 h-3" /> Night
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
 
           <div className="flex gap-2">

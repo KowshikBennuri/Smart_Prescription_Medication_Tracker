@@ -1,67 +1,128 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { Pill, LogOut, CheckCircle, AlertCircle } from 'lucide-react';
+import { Pill, LogOut, CheckCircle, AlertCircle, Sunrise, Sun, Sunset, User } from 'lucide-react'; // Added User icon
 import { MedicationTracker } from './MedicationTracker';
+import { supabase } from '../lib/supabaseClient';
+import { EditProfileModal } from './EditProfileModal'; // NEW IMPORT
+
+// --- (Types) ---
+type MedicationItem = {
+  id: string;
+  name: string;
+  dosage: string;
+  timing: { morning: boolean; afternoon: boolean; night: boolean };
+  instructions: string;
+};
 
 type Prescription = {
   id: string;
   patient_id: string;
   doctor_id: string;
-  medication_name: string;
-  dosage: string;
-  frequency: string;
   start_date: string;
   end_date: string;
-  status: 'active' | 'completed' | 'cancelled';
+  status: 'active' | 'completed' | 'cancelled' | 'pending_ai_check';
   diagnosis?: string | null;
-  instructions?: string | null;
-  doctor_name?: string;
+  medications: MedicationItem[];
+  created_at?: string;
 };
 
 type MedicationLog = {
-  id: string;
+  id: string; // This is the log's own ID
   prescription_id: string;
   patient_id: string;
-  scheduled_time: string;
+  medication_id: string;
+  medication_name: string;
+  dosage: string;
+  scheduled_time: string; // ISO string
   status: 'pending' | 'taken' | 'missed' | 'skipped';
   taken_at?: string | null;
 };
-
-const PRESCRIPTIONS_KEY = 'mock_prescriptions_v1';
-const MED_LOGS_KEY = 'mock_medication_logs_v1';
+// --- (End Types) ---
 
 export function PatientDashboard() {
   const { profile, signOut } = useAuth();
   const [prescriptions, setPrescriptions] = useState<Prescription[]>([]);
   const [logs, setLogs] = useState<MedicationLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showEditProfile, setShowEditProfile] = useState(false); // NEW STATE for Edit Profile modal
 
-  useEffect(() => {
-    loadLocalData();
-  }, [profile?.id]);
+  // NEW STATE for medication alerts
+  const [shownAlerts, setShownAlerts] = useState<string[]>([]); // To avoid spamming alerts
 
-  const loadLocalData = () => {
+  // NEW: Load all data from Supabase
+  const loadDataFromSupabase = async () => {
+    if (!profile) return;
     setLoading(true);
     try {
-      const rawPrescriptions = localStorage.getItem(PRESCRIPTIONS_KEY);
-      const rawLogs = localStorage.getItem(MED_LOGS_KEY);
+      // 1. Fetch prescriptions
+      const { data: prescriptionsData, error: prescriptionsError } = await supabase
+        .from('prescriptions')
+        .select('*')
+        .eq('patient_id', profile.id)
+        .order('created_at', { ascending: false });
 
-      const allPrescriptions = rawPrescriptions ? JSON.parse(rawPrescriptions) : [];
-      const allLogs = rawLogs ? JSON.parse(rawLogs) : [];
+      if (prescriptionsError) throw prescriptionsError;
+      setPrescriptions(prescriptionsData as Prescription[] || []);
 
-      const filteredPres = allPrescriptions.filter(
-        (p: Prescription) => p.patient_id === profile?.id
-      );
-      const filteredLogs = allLogs.filter(
-        (l: MedicationLog) => l.patient_id === profile?.id
-      );
+      // 2. Fetch all medication logs
+      const { data: logsData, error: logsError } = await supabase
+        .from('medication_logs')
+        .select('*')
+        .eq('patient_id', profile.id)
+        .order('scheduled_time', { ascending: true });
 
-      setPrescriptions(filteredPres);
-      setLogs(filteredLogs);
+      if (logsError) throw logsError;
+      setLogs(logsData as MedicationLog[] || []);
+
+    } catch (error: any) {
+      console.error("Error loading patient data:", error.message);
     } finally {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    loadDataFromSupabase();
+  }, [profile?.id]);
+
+  // --- NEW useEffect for Medication Alerts ---
+  useEffect(() => {
+    const checkMedications = () => {
+      const now = new Date().getTime();
+      
+      // We only care about pending logs
+      const pendingLogs = logs.filter(log => log.status === 'pending');
+      
+      for (const log of pendingLogs) {
+        const scheduledTime = new Date(log.scheduled_time).getTime();
+        
+        // If the scheduled time is in the past AND we haven't alerted for it yet
+        if (now > scheduledTime && !shownAlerts.includes(log.id)) {
+          
+          // Show the alert
+          alert(
+            `Medication Reminder:\n\nIt's time to take your ${log.medication_name} (${log.dosage}).`
+          );
+          
+          // Add this log's ID to the list of shown alerts
+          // This ensures the alert only fires once
+          setShownAlerts(prev => [...prev, log.id]);
+        }
+      }
+    };
+
+    // Check every 30 seconds
+    const intervalId = setInterval(checkMedications, 30000);
+
+    // Run once on load just in case
+    if (logs.length > 0 && !loading) { // Check only after initial load
+      checkMedications();
+    }
+
+    // Cleanup the interval when the component unmounts
+    return () => clearInterval(intervalId);
+    
+  }, [logs, shownAlerts, loading]); // Added loading dependency
 
   const activePrescriptions = prescriptions.filter(p => p.status === 'active');
 
@@ -71,10 +132,11 @@ export function PatientDashboard() {
   });
 
   const takenToday = todayLogs.filter(log => log.status === 'taken').length;
+  const pendingToday = todayLogs.filter(log => log.status === 'pending').length;
 
   const adherenceRate =
     logs.length > 0
-      ? Math.round((logs.filter(log => log.status === 'taken').length / logs.length) * 100)
+      ? Math.round((logs.filter(log => log.status === 'taken').length / logs.filter(log => log.status !== 'skipped').length) * 100)
       : 0;
 
   if (loading) {
@@ -87,7 +149,7 @@ export function PatientDashboard() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Top bar */}
+      {/* Top bar - MODIFIED */}
       <nav className="bg-white shadow-sm border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex justify-between items-center">
           <div className="flex items-center">
@@ -97,13 +159,23 @@ export function PatientDashboard() {
               <p className="text-sm text-gray-500">Patient Portal</p>
             </div>
           </div>
-          <button
-            onClick={() => signOut()}
-            className="flex items-center gap-2 px-4 py-2 text-gray-700 hover:text-gray-900 transition"
-          >
-            <LogOut className="w-5 h-5" />
-            <span>Sign Out</span>
-          </button>
+          {/* MODIFIED: Added Edit Profile button */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowEditProfile(true)}
+              className="flex items-center gap-2 px-4 py-2 text-gray-700 hover:text-gray-900 transition"
+            >
+              <User className="w-5 h-5" />
+              <span>Edit Profile</span>
+            </button>
+            <button
+              onClick={() => signOut()}
+              className="flex items-center gap-2 px-4 py-2 text-gray-700 hover:text-gray-900 transition"
+            >
+              <LogOut className="w-5 h-5" />
+              <span>Sign Out</span>
+            </button>
+          </div>
         </div>
       </nav>
 
@@ -115,16 +187,14 @@ export function PatientDashboard() {
             <p className="text-sm text-gray-600 mb-1">Active Prescriptions</p>
             <p className="text-3xl font-bold">{activePrescriptions.length}</p>
           </div>
-
           <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
             <p className="text-sm text-gray-600 mb-1">Taken Today</p>
             <p className="text-3xl font-bold">{takenToday}</p>
             <CheckCircle className="w-6 h-6 text-green-600 mt-2" />
           </div>
-
           <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-            <p className="text-sm text-gray-600 mb-1">Adherence Rate</p>
-            <p className="text-3xl font-bold">{adherenceRate}%</p>
+            <p className="text-sm text-gray-600 mb-1">Pending Today</p>
+            <p className="text-3xl font-bold">{pendingToday}</p>
             <AlertCircle className="w-6 h-6 text-blue-600 mt-2" />
           </div>
         </div>
@@ -138,13 +208,13 @@ export function PatientDashboard() {
             </div>
             <div className="p-6">
               <MedicationTracker
-                prescriptions={activePrescriptions}
-                onRefresh={loadLocalData}
+                logs={logs} // Pass the logs from DB
+                onRefresh={loadDataFromSupabase} // Pass the DB refresh function
               />
             </div>
           </div>
 
-          {/* Prescriptions List */}
+          {/* Prescriptions List - MODIFIED to show new structure */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-100">
             <div className="border-b border-gray-200 px-6 py-4">
               <h2 className="text-lg font-semibold">Your Prescriptions</h2>
@@ -164,14 +234,12 @@ export function PatientDashboard() {
                   }`}
                 >
                   <div className="flex justify-between mb-3">
-                    <h3 className="font-semibold">{p.medication_name}</h3>
+                    <h3 className="font-semibold">{p.diagnosis || 'Prescription Set'}</h3>
                     <span className="text-xs px-2 py-1 rounded bg-gray-100">
                       {p.status}
                     </span>
                   </div>
 
-                  <p className="text-sm"><strong>Dosage:</strong> {p.dosage}</p>
-                  <p className="text-sm"><strong>Frequency:</strong> {p.frequency}</p>
                   <p className="text-sm">
                     <strong>Start:</strong> {new Date(p.start_date).toLocaleDateString()}
                   </p>
@@ -179,19 +247,31 @@ export function PatientDashboard() {
                     <strong>End:</strong> {new Date(p.end_date).toLocaleDateString()}
                   </p>
 
-                  {p.instructions && (
-                    <p className="text-sm mt-2"><strong>Instructions:</strong> {p.instructions}</p>
-                  )}
-
-                  {p.diagnosis && (
-                    <p className="text-sm mt-2"><strong>Diagnosis:</strong> {p.diagnosis}</p>
-                  )}
+                  <div className="mt-3 space-y-2">
+                    <p className="text-xs font-medium text-gray-600">Medications:</p>
+                    {p.medications.map(med => (
+                      <div key={med.id} className="p-2 bg-white rounded border">
+                        <p className="font-semibold text-sm">{med.name} - {med.dosage}</p>
+                        <p className="text-xs text-gray-600">{med.instructions}</p>
+                        <div className="flex items-center gap-3 mt-1.5">
+                          {med.timing.morning && <div className="flex items-center gap-1 text-xs text-yellow-700"><Sunrise className="w-3 h-3" /> Morning</div>}
+                          {med.timing.afternoon && <div className="flex items-center gap-1 text-xs text-blue-700"><Sun className="w-3 h-3" /> Afternoon</div>}
+                          {med.timing.night && <div className="flex items-center gap-1 text-xs text-indigo-700"><Sunset className="w-3 h-3" /> Night</div>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>
           </div>
         </div>
       </div>
+
+      {/* NEW: Render the Edit Profile modal */}
+      {showEditProfile && (
+        <EditProfileModal onClose={() => setShowEditProfile(false)} />
+      )}
     </div>
   );
 }
