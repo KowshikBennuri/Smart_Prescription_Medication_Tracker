@@ -1,15 +1,31 @@
-import { supabase } from '../lib/supabase';
 import { Pill, Calendar, Clock, FileText, Trash2 } from 'lucide-react';
-import type { Database } from '../lib/database.types';
 
-type Prescription = Database['public']['Tables']['prescriptions']['Row'];
-type Profile = Database['public']['Tables']['profiles']['Row'];
+type Prescription = {
+  id: string;
+  patient_id: string;
+  medication_name: string;
+  dosage: string;
+  frequency: string;
+  start_date: string;
+  end_date: string;
+  status: 'active' | 'completed' | 'cancelled';
+  diagnosis?: string | null;
+  instructions?: string | null;
+};
+
+type Profile = {
+  id: string;
+  full_name: string;
+  role: string;
+};
 
 interface PrescriptionListProps {
   prescriptions: Prescription[];
   patients: Profile[];
   onRefresh: () => void;
 }
+
+const PRESCRIPTIONS_KEY = 'mock_prescriptions_v1';
 
 export function PrescriptionList({ prescriptions, patients, onRefresh }: PrescriptionListProps) {
   const getPatientName = (patientId: string) => {
@@ -30,41 +46,31 @@ export function PrescriptionList({ prescriptions, patients, onRefresh }: Prescri
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this prescription?')) return;
-
-    try {
-      const { error } = await supabase
-        .from('prescriptions')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw error;
-      onRefresh();
-    } catch (error: any) {
-      alert('Error deleting prescription: ' + error.message);
-    }
+  const updateStorage = (updatedList: Prescription[]) => {
+    localStorage.setItem(PRESCRIPTIONS_KEY, JSON.stringify(updatedList));
+    onRefresh();
   };
 
-  const handleStatusChange = async (id: string, newStatus: 'active' | 'completed' | 'cancelled') => {
-    try {
-      const { error } = await supabase
-        .from('prescriptions')
-        .update({ status: newStatus })
-        .eq('id', id);
+  const handleDelete = (id: string) => {
+    if (!confirm('Are you sure you want to delete this prescription?')) return;
+    const updated = prescriptions.filter(p => p.id !== id);
+    updateStorage(updated);
+  };
 
-      if (error) throw error;
-      onRefresh();
-    } catch (error: any) {
-      alert('Error updating prescription: ' + error.message);
-    }
+  const handleStatusChange = (id: string, newStatus: 'active' | 'completed' | 'cancelled') => {
+    const updated = prescriptions.map(p =>
+      p.id === id ? { ...p, status: newStatus } : p
+    );
+    updateStorage(updated);
   };
 
   if (prescriptions.length === 0) {
     return (
       <div className="text-center py-12">
         <FileText className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-        <p className="text-gray-500">No prescriptions yet. Create your first prescription to get started.</p>
+        <p className="text-gray-500">
+          No prescriptions yet. Create your first prescription to get started.
+        </p>
       </div>
     );
   }
@@ -72,7 +78,10 @@ export function PrescriptionList({ prescriptions, patients, onRefresh }: Prescri
   return (
     <div className="space-y-4">
       {prescriptions.map((prescription) => (
-        <div key={prescription.id} className="border border-gray-200 rounded-lg p-5 hover:border-gray-300 transition-colors">
+        <div
+          key={prescription.id}
+          className="border border-gray-200 rounded-lg p-5 hover:border-gray-300 transition-colors"
+        >
           <div className="flex items-start justify-between mb-3">
             <div className="flex-1">
               <div className="flex items-center gap-3 mb-2">
@@ -81,8 +90,11 @@ export function PrescriptionList({ prescriptions, patients, onRefresh }: Prescri
                   {prescription.status}
                 </span>
               </div>
-              <p className="text-sm text-gray-600 mb-1">Patient: {getPatientName(prescription.patient_id)}</p>
+              <p className="text-sm text-gray-600 mb-1">
+                Patient: {getPatientName(prescription.patient_id)}
+              </p>
             </div>
+
             <button
               onClick={() => handleDelete(prescription.id)}
               className="text-red-500 hover:text-red-700 transition-colors"
@@ -99,6 +111,7 @@ export function PrescriptionList({ prescriptions, patients, onRefresh }: Prescri
                 <p className="text-sm font-medium text-gray-900">{prescription.dosage}</p>
               </div>
             </div>
+
             <div className="flex items-center gap-2">
               <Clock className="w-4 h-4 text-gray-400" />
               <div>
@@ -106,6 +119,7 @@ export function PrescriptionList({ prescriptions, patients, onRefresh }: Prescri
                 <p className="text-sm font-medium text-gray-900">{prescription.frequency}</p>
               </div>
             </div>
+
             <div className="flex items-center gap-2">
               <Calendar className="w-4 h-4 text-gray-400" />
               <div>
@@ -115,6 +129,7 @@ export function PrescriptionList({ prescriptions, patients, onRefresh }: Prescri
                 </p>
               </div>
             </div>
+
             <div className="flex items-center gap-2">
               <Calendar className="w-4 h-4 text-gray-400" />
               <div>
@@ -142,7 +157,7 @@ export function PrescriptionList({ prescriptions, patients, onRefresh }: Prescri
             {prescription.status !== 'active' && (
               <button
                 onClick={() => handleStatusChange(prescription.id, 'active')}
-                className="px-3 py-1 bg-green-100 text-green-700 rounded hover:bg-green-200 transition-colors text-sm"
+                className="px-3 py-1 bg-green-100 text-green-700 rounded hover:bg-green-200 text-sm"
               >
                 Mark Active
               </button>
@@ -150,7 +165,7 @@ export function PrescriptionList({ prescriptions, patients, onRefresh }: Prescri
             {prescription.status !== 'completed' && (
               <button
                 onClick={() => handleStatusChange(prescription.id, 'completed')}
-                className="px-3 py-1 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors text-sm"
+                className="px-3 py-1 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 text-sm"
               >
                 Mark Completed
               </button>
@@ -158,7 +173,7 @@ export function PrescriptionList({ prescriptions, patients, onRefresh }: Prescri
             {prescription.status !== 'cancelled' && (
               <button
                 onClick={() => handleStatusChange(prescription.id, 'cancelled')}
-                className="px-3 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors text-sm"
+                className="px-3 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200 text-sm"
               >
                 Cancel
               </button>

@@ -1,15 +1,45 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { supabase } from '../lib/supabase';
 import { CheckCircle, XCircle, Clock, Plus, Calendar } from 'lucide-react';
-import type { Database } from '../lib/database.types';
 
-type Prescription = Database['public']['Tables']['prescriptions']['Row'];
-type MedicationLog = Database['public']['Tables']['medication_logs']['Row'];
+type Prescription = {
+  id: string;
+  medication_name: string;
+  dosage: string;
+};
+
+type MedicationLog = {
+  id: string;
+  prescription_id: string;
+  patient_id: string;
+  scheduled_time: string; // ISO string
+  status: 'pending' | 'taken' | 'missed' | 'skipped';
+  taken_at?: string | null;
+};
 
 interface MedicationTrackerProps {
   prescriptions: Prescription[];
   onRefresh: () => void;
+}
+
+const STORAGE_KEY = 'mock_medication_logs_v1';
+
+function readLogsFromStorage(): MedicationLog[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw) as MedicationLog[];
+  } catch {
+    return [];
+  }
+}
+
+function writeLogsToStorage(logs: MedicationLog[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(logs));
+  } catch {
+    // ignore
+  }
 }
 
 export function MedicationTracker({ prescriptions, onRefresh }: MedicationTrackerProps) {
@@ -20,68 +50,97 @@ export function MedicationTracker({ prescriptions, onRefresh }: MedicationTracke
 
   useEffect(() => {
     loadLogs();
-  }, [selectedDate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDate, profile?.id]);
 
   const loadLogs = async () => {
+    setLoading(true);
     try {
+      const all = readLogsFromStorage();
       const startOfDay = new Date(selectedDate);
       startOfDay.setHours(0, 0, 0, 0);
       const endOfDay = new Date(selectedDate);
       endOfDay.setHours(23, 59, 59, 999);
 
-      const { data } = await supabase
-        .from('medication_logs')
-        .select('*')
-        .eq('patient_id', profile?.id)
-        .gte('scheduled_time', startOfDay.toISOString())
-        .lte('scheduled_time', endOfDay.toISOString())
-        .order('scheduled_time', { ascending: true });
+      const filtered = all.filter((l) => {
+        if (!profile?.id) return false;
+        if (l.patient_id !== profile.id) return false;
+        const t = new Date(l.scheduled_time).getTime();
+        return t >= startOfDay.getTime() && t <= endOfDay.getTime();
+      });
 
-      setLogs(data || []);
-    } catch (error) {
-      console.error('Error loading logs:', error);
+      // Sort by scheduled_time ascending
+      filtered.sort((a, b) => new Date(a.scheduled_time).getTime() - new Date(b.scheduled_time).getTime());
+
+      setLogs(filtered);
+    } catch (err) {
+      console.error('Error loading logs (local):', err);
+      setLogs([]);
+    } finally {
+      setLoading(false);
     }
   };
 
+  const persistAndRefresh = (nextLogs: MedicationLog[]) => {
+    const all = readLogsFromStorage();
+    // replace any logs with same id
+    const other = all.filter((l) => !nextLogs.some((nl) => nl.id === l.id));
+    const merged = [...other, ...nextLogs];
+    writeLogsToStorage(merged);
+    loadLogs();
+    onRefresh();
+  };
+
   const addMedicationLog = async (prescriptionId: string, scheduledTime: string) => {
+    if (!profile?.id) {
+      alert('No user/profile found (mock mode).');
+      return;
+    }
     setLoading(true);
     try {
-      const { error } = await supabase
-        .from('medication_logs')
-        .insert({
-          prescription_id: prescriptionId,
-          patient_id: profile?.id!,
-          scheduled_time: scheduledTime,
-          status: 'pending',
-        });
+      const newLog: MedicationLog = {
+        id: 'log_' + Math.random().toString(36).slice(2, 9),
+        prescription_id: prescriptionId,
+        patient_id: profile.id,
+        scheduled_time: scheduledTime,
+        status: 'pending',
+        taken_at: null,
+      };
 
-      if (error) throw error;
+      const all = readLogsFromStorage();
+      all.push(newLog);
+      writeLogsToStorage(all);
+
       await loadLogs();
       onRefresh();
-    } catch (error: any) {
-      alert('Error adding medication log: ' + error.message);
+    } catch (err: any) {
+      alert('Error adding medication log (local): ' + (err?.message || err));
     } finally {
       setLoading(false);
     }
   };
 
   const updateLogStatus = async (logId: string, status: 'taken' | 'missed' | 'skipped') => {
+    setLoading(true);
     try {
-      const updateData: any = { status };
+      const all = readLogsFromStorage();
+      const idx = all.findIndex((l) => l.id === logId);
+      if (idx === -1) throw new Error('Log not found');
+
+      all[idx].status = status as MedicationLog['status'];
       if (status === 'taken') {
-        updateData.taken_at = new Date().toISOString();
+        all[idx].taken_at = new Date().toISOString();
+      } else {
+        all[idx].taken_at = null;
       }
 
-      const { error } = await supabase
-        .from('medication_logs')
-        .update(updateData)
-        .eq('id', logId);
-
-      if (error) throw error;
+      writeLogsToStorage(all);
       await loadLogs();
       onRefresh();
-    } catch (error: any) {
-      alert('Error updating medication log: ' + error.message);
+    } catch (err: any) {
+      alert('Error updating medication log (local): ' + (err?.message || err));
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -112,7 +171,7 @@ export function MedicationTracker({ prescriptions, onRefresh }: MedicationTracke
   };
 
   const getMedicationName = (prescriptionId: string) => {
-    const prescription = prescriptions.find(p => p.id === prescriptionId);
+    const prescription = prescriptions.find((p) => p.id === prescriptionId);
     return prescription ? `${prescription.medication_name} - ${prescription.dosage}` : 'Unknown';
   };
 
@@ -164,7 +223,10 @@ export function MedicationTracker({ prescriptions, onRefresh }: MedicationTracke
             <h3 className="text-sm font-medium text-gray-700 mb-2">
               Logs for {new Date(selectedDate).toLocaleDateString()}
             </h3>
-            {logs.length === 0 ? (
+
+            {loading ? (
+              <p className="text-sm text-gray-500 py-4">Loading logs...</p>
+            ) : logs.length === 0 ? (
               <p className="text-sm text-gray-500 py-4">No medication logs for this date.</p>
             ) : (
               <div className="space-y-2">
@@ -187,6 +249,7 @@ export function MedicationTracker({ prescriptions, onRefresh }: MedicationTracke
                         </p>
                       </div>
                     </div>
+
                     {log.status === 'pending' && (
                       <div className="flex gap-2">
                         <button
@@ -203,12 +266,10 @@ export function MedicationTracker({ prescriptions, onRefresh }: MedicationTracke
                         </button>
                       </div>
                     )}
+
                     {log.status === 'taken' && log.taken_at && (
                       <span className="text-xs text-gray-600">
-                        Taken at {new Date(log.taken_at).toLocaleTimeString([], {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
+                        Taken at {new Date(log.taken_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </span>
                     )}
                   </div>
